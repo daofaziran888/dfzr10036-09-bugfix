@@ -90,6 +90,8 @@
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <HandoverPanel v-if="handoverDataflow" :dataflow="handoverDataflow" />
   </section>
 </template>
 
@@ -104,9 +106,22 @@ import {
   runAction as applyAction,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
+import HandoverPanel from './HandoverPanel.vue'
+
+const HANDOVER_MODULES = [
+  'binlog_parse',
+  'parse_version',
+  'handover_point',
+  'event_ingest',
+  'event_trans',
+  'event_trans_accept',
+  'event_output',
+  'batch_consume',
+]
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
+const handoverDataflow = HANDOVER_MODULES.includes(props.moduleKey) ? 'order_events_cdc' : ''
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services import pipeline
 from app.services.base import BaseModuleService
 from app.store import store
 
@@ -14,8 +15,47 @@ class BinlogParseService(BaseModuleService):
     LIST_FIELDS = ["规则编号", "源端", "日志格式", "事件过滤", "字段映射", "DDL处理", "大事务拆分", "解析速率"]
     REQUIRED_FIELDS = ["规则编号", "源端", "日志格式"]
     STATUS_ORDER = ["草稿", "解析中", "速率下降", "解析中断"]
-    ACTION_RULES = {"启动解析": "解析中", "调整速率": "速率下降", "标记中断": "解析中断"}
+    ACTION_RULES = {"启动解析": "解析中", "调整速率": "速率下降", "标记中断": "解析中断", "发布规则": "解析中"}
     NEGATIVE_ACTIONS = []
+
+    def publish_rule(self, entry_id: int) -> tuple[dict[str, Any] | None, str]:
+        """发布解析规则：事件过滤与字段映射属于同一规则版本，整体替换下游条件。
+
+        数据流链路: binlog_parse(规则版本) -> parse_version -> event_trans
+        """
+        entry = self.get_entry(entry_id)
+        if entry is None:
+            return None, f"解析规则 {entry_id} 不存在或已归档"
+        source = str(entry.get("源端", ""))
+        dataflow = pipeline.dataflow_for_source(source)
+        # 新版本只覆盖尚未接入的位点，已绑定旧版本的事件继续按旧版本判定。
+        known = [
+            int(pipeline.parse_offset(row.get("源端位点", "0")) or 0)
+            for row in store.rows("event_ingest")
+            if str(row.get("数据流", "")) == dataflow
+        ]
+        range_start = max(pipeline.RESUME_OFFSET.get(dataflow, 0), (max(known) + 1) if known else 0)
+        field_mapping = str(entry.get("字段映射", ""))
+        version = pipeline.publish_version(
+            rule_number=str(entry.get("规则编号", "")),
+            source=source,
+            dataflow=dataflow,
+            event_filter=str(entry.get("事件过滤", "")),
+            field_mapping=field_mapping,
+            range_start=range_start,
+        )
+        entry["status"] = "解析中"
+        entry["pending"] = True
+        entry["abnormal"] = version.get("status") == "待补齐"
+        entry["当前版本"] = str(version.get("规则版本", ""))
+        trans = pipeline.sync_rule_and_pipeline(version)
+        message = (
+            f"解析规则 {entry.get('规则编号')} 已发布为 {version.get('规则版本')}"
+            f"（{version.get('事件过滤')}）；事件转换管道"
+            f"{trans.get('管道编号') if trans else '未创建'} 已同步，状态 {version.get('status')}"
+        )
+        return entry, message
+
 
     def trigger_downstream_event_trans(self, entry_id: int) -> dict[str, Any] | None:
         """binlog解析变为「解析中」后，级联创建 event_trans 转换管道。
@@ -52,6 +92,14 @@ class BinlogParseService(BaseModuleService):
         }
         trans_rows.append(downstream)
         return downstream
+
+    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
+        if action == "发布规则":
+            return self.publish_rule(entry_id)
+        entry, message = super().run_action(entry_id, action)
+        if entry is not None and action == "启动解析":
+            self.trigger_downstream_event_trans(entry_id)
+        return entry, message
 
     def propagate_rate_adjustment(self) -> dict[str, Any]:
         """解析速率下降时，将上游速率事件传播到下游。

@@ -154,10 +154,3 @@ def trigger_flow_sink_block_to_compaction(sink_entry_id: int) -> dict[str, Any]:
     """主线链路: 落盘阻塞 -> 小文件合并清理"""
     from app.services.orchestrator import flow_sink_block_to_compaction
     return flow_sink_block_to_compaction(sink_entry_id)
-
-
-@router.get("/flows/list")
-def list_flows() -> dict[str, Any]:
-    """列出所有可编排流链路"""
-    from app.services.orchestrator import FLOWS
-    return {"flows": list(FLOWS.keys()), "count": len(FLOWS)}

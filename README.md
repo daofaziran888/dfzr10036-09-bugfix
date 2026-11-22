@@ -72,6 +72,41 @@ npm run dev
 | 编排调度 | `task_schedule` | 调度计划 | 计划编号、关联链路、Cron表达式 |
 | 流审计 | `stream_audit` | 审计记录 | 记录编号、数据流、操作类型 |
 | 健康报告 | `stream_health` | 健康评估 | 评估编号、数据流、健康分数 |
+| 规则版本 | `parse_version` | 规则版本 | 版本编号、事件过滤、字段映射、列映射 |
+| 交接点 | `handover_point` | 交接点 | 交接编号、规则版本、位点范围、续做位点 |
+| 事件接入 | `event_ingest` | 接入事件 | 事件编号、源端位点、事件类型、待核原因 |
+| 转换字段接纳 | `event_trans_accept` | 接纳结果 | 接纳编号、事件类型、规则版本、列版本 |
+| 转换输出 | `event_output` | 转换输出 | 输出编号、源端位点、消费阻塞原因 |
+| 批次消费 | `batch_consume` | 消费记录 | 消费编号、消费阶段、追溯日志位置 |
+
+## 规则版本与事件交接
+
+日志解析启用新配置时，事件过滤与字段映射作为一个整体发布成规则版本
+（`parse_version`）。发布动作会把 `event_trans` 的事件类型直接覆盖为新版本的过滤条件，
+不再残留上一版本的 INSERT 条件。
+
+交接链路的固定接口（先于 `/{module}/{entry_id}` 动态路由注册）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/parse-rules/{id}/publish` | 发布解析规则并整体同步事件转换 |
+| POST | `/api/parse-versions/{id}/fill-columns` | 补齐同一规则版本内的列定义 |
+| POST | `/api/event-ingest/{id}/retry` | 重试挂起批次（缺列定义时继续挂起） |
+| POST | `/api/event-ingest/{id}/resume` | 从可辨识的源日志位点续做 |
+| POST | `/api/event-output/{id}/release` | 放行转换输出并按位点顺序消费 |
+| POST | `/api/handover/{id}/advance` | 推进交接点，按序放行旧批输出 |
+| GET | `/api/stream-handover/{dataflow}` | 工作台核对视图（版本/接纳/输出/消费） |
+| POST | `/api/flows/stream-handover` | CDC 编排入口，送入数据流事件 |
+| GET | `/api/batch_consume/{id}/trace` | 由消费记录反查转换输出与原日志 |
+
+约定：
+
+- 每条事件按自身位点绑定规则版本，删除还是插入只由该版本判定。
+- 字段未核实或版本缺列定义时事件挂起，投递失败原因会点名缺少的列。
+- 转换输出按源日志位点有序交接；前序位点未放行时，后续输出只落输出表，
+  不进入维表关联与流去重。
+- 重试幂等：同一数据流同一位点只生成一份输出、每个阶段只消费一次。
+- 已生成的旧批输出保留原日志位置与原始日志，消费记录可逐条反查。
 
 ## 约定
 

@@ -31,8 +31,8 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
         {
             "id": 1, "status": "解析中", "pending": True, "abnormal": False,
             "规则编号": "BINL-0001", "源端": "PROD-MYSQL-01",
-            "日志格式": "ROW-全字段", "事件过滤": "INSERT,UPDATE,DELETE",
-            "字段映射": "全列映射+时间戳标准化", "DDL处理": "自动同步",
+            "日志格式": "ROW-全字段", "事件过滤": "DELETE",
+            "字段映射": "DELETE批次列映射：仅保留主键与操作标记", "DDL处理": "自动同步",
             "大事务拆分": "10000行/批", "解析速率": "8500 eps",
         },
         {
@@ -52,12 +52,16 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     ],
     "event_trans": [
         {
-            "id": 1, "status": "转换中", "pending": True, "abnormal": False,
+            "id": 1, "status": "转换中", "pending": True, "abnormal": True,
             "管道编号": "ETR-0001", "源端": "PROD-MYSQL-01",
-            "事件类型": "INSERT,UPDATE,DELETE",
-            "转换函数": "flatten_nested,cast_timestamp,normalize_pk,enrich_with_meta",
+            "事件类型": "DELETE",
+            "转换函数": "map_delete_columns,normalize_pk",
             "输出格式": "Avro-Schema-Registry", "失败策略": "写入死信队列+重试3次",
-            "转换顺序": "先扁平后类型转换再属性补全", "最近吞吐": "12.5k eps",
+            "转换顺序": "先字段接纳后类型转换",
+            "列版本": "COL-v2",
+            "当前事件": "INGT-0002 位点binlog.001234:41 DELETE v2",
+            "待核原因": "投递失败：规则版本 v2（DELETE）缺少列定义：status、event_time，事件暂缓消费",
+            "最近吞吐": "12.5k eps",
         },
         {
             "id": 2, "status": "草稿", "pending": True, "abnormal": False,
@@ -338,4 +342,105 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
             "合规标记": "合规",
         },
     ],
+    # ===== 规则版本 / 事件交接流水线 =====
+    "parse_version": [
+        {
+            "id": 1, "status": "已发布", "pending": True, "abnormal": False,
+            "版本编号": "PV-0001", "规则编号": "BINL-0001", "源端": "PROD-MYSQL-01",
+            "数据流": "order_events_cdc", "规则版本": "v1",
+            "事件过滤": "INSERT,UPDATE",
+            "字段映射": "全列映射+时间戳标准化",
+            "列映射": "INSERT(order_id:BIGINT, user_id:BIGINT, amount:DECIMAL(18,2), status:VARCHAR(32), event_time:TIMESTAMP) | "
+                       "UPDATE(order_id:BIGINT, user_id:BIGINT, amount:DECIMAL(18,2), status:VARCHAR(32), event_time:TIMESTAMP)",
+            "列版本": "COL-v1",
+            "_range_start": 0,
+            "_columns": {
+                "INSERT": {"order_id": "BIGINT", "user_id": "BIGINT", "amount": "DECIMAL(18,2)",
+                           "status": "VARCHAR(32)", "event_time": "TIMESTAMP"},
+                "UPDATE": {"order_id": "BIGINT", "user_id": "BIGINT", "amount": "DECIMAL(18,2)",
+                           "status": "VARCHAR(32)", "event_time": "TIMESTAMP"},
+            },
+            "_required": {
+                "INSERT": ["order_id", "user_id", "amount", "status", "event_time"],
+                "UPDATE": ["order_id", "user_id", "amount", "status", "event_time"],
+            },
+            "_published_at": "2026-11-18 09:00:00",
+        },
+        {
+            "id": 2, "status": "待补齐", "pending": True, "abnormal": True,
+            "版本编号": "PV-0002", "规则编号": "BINL-0001", "源端": "PROD-MYSQL-01",
+            "数据流": "order_events_cdc", "规则版本": "v2",
+            "事件过滤": "DELETE",
+            "字段映射": "DELETE批次列映射：仅保留主键与操作标记",
+            "列映射": "DELETE(待补齐: status、event_time)",
+            "列版本": "COL-v2",
+            "_range_start": 41,
+            "_columns": {
+                "DELETE": {"order_id": "BIGINT"},
+            },
+            "_required": {
+                "DELETE": ["order_id", "status", "event_time"],
+            },
+            "_published_at": "2026-11-18 10:20:00",
+        },
+    ],
+    "handover_point": [
+        {
+            "id": 1, "status": "冲突", "pending": True, "abnormal": True,
+            "交接编号": "HAND-0001", "数据流": "order_events_cdc", "源端": "PROD-MYSQL-01",
+            "规则版本": "v1→v2", "位点范围": "≤40 | ≥41",
+            "前序位点": "binlog.001234:40", "续做位点": "binlog.001234:41",
+            "冲突说明": "旧批 v1 仍有位点40 待转换，新批 v2 挂在缺少必要映射：status、event_time",
+            "_version_id": 2, "_range_start": 41,
+        },
+    ],
+    "event_ingest": [
+        {
+            "id": 1, "status": "已接纳", "pending": True, "abnormal": False,
+            "事件编号": "INGT-0001", "数据流": "order_events_cdc", "业务键": "7",
+            "源端位点": "binlog.001234:40", "事件类型": "INSERT",
+            "规则版本": "v1", "列版本": "COL-v1", "字段核对": "通过", "原日志位置": "binlog.001234:40",
+            "待核原因": "",
+            "_payload": {"order_id": 7, "user_id": 1024, "amount": "199.00",
+                         "status": "CREATED", "event_time": "2026-11-18 10:19:58"},
+            "_raw_log": "[binlog.001234:40] table=order_events op=INSERT pk=7 order_id=7 user_id=1024 amount=199.00 status=CREATED",
+        },
+        {
+            "id": 2, "status": "挂起待核", "pending": True, "abnormal": True,
+            "事件编号": "INGT-0002", "数据流": "order_events_cdc", "业务键": "7",
+            "源端位点": "binlog.001234:41", "事件类型": "DELETE",
+            "规则版本": "v2", "列版本": "COL-v2", "字段核对": "待核实", "原日志位置": "binlog.001234:41",
+            "待核原因": "投递失败：规则版本 v2（DELETE）缺少列定义：status、event_time，事件暂缓消费",
+            "_payload": {"order_id": 7, "status": "DELETED", "event_time": "2026-11-18 10:20:01"},
+            "_raw_log": "[binlog.001234:41] table=order_events op=DELETE pk=7 order_id=7 status=DELETED",
+        },
+    ],
+    "event_trans_accept": [
+        {
+            "id": 1, "status": "已通过", "pending": True, "abnormal": False,
+            "接纳编号": "ACPT-0001", "数据流": "order_events_cdc", "业务键": "7",
+            "源端位点": "binlog.001234:40", "事件类型": "INSERT",
+            "规则版本": "v1", "列版本": "COL-v1", "接纳结论": "已通过", "待核原因": "",
+        },
+        {
+            "id": 2, "status": "暂缓", "pending": True, "abnormal": True,
+            "接纳编号": "ACPT-0002", "数据流": "order_events_cdc", "业务键": "7",
+            "源端位点": "binlog.001234:41", "事件类型": "DELETE",
+            "规则版本": "v2", "列版本": "COL-v2", "接纳结论": "待核",
+            "待核原因": "投递失败：规则版本 v2（DELETE）缺少列定义：status、event_time，事件暂缓消费",
+        },
+    ],
+    "event_output": [
+        {
+            "id": 1, "status": "待放行", "pending": True, "abnormal": False,
+            "输出编号": "OUTP-0001", "数据流": "order_events_cdc", "业务键": "7",
+            "源端位点": "binlog.001234:40", "事件类型": "INSERT",
+            "规则版本": "v1", "列版本": "COL-v1",
+            "原日志位置": "binlog.001234:40",
+            "原始日志": "[binlog.001234:40] table=order_events op=INSERT pk=7 order_id=7 user_id=1024 amount=199.00 status=CREATED",
+            "消费阻塞原因": "交接点冲突：旧批 v1 位点40 暂停在转换输出发布前",
+            "输出说明": "输出已生成但暂停在转换输出发布前",
+        },
+    ],
+    "batch_consume": [],
 }

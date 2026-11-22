@@ -24,6 +24,12 @@ from app.services.data_diff import DataDiffService
 from app.services.task_schedule import TaskScheduleService
 from app.services.stream_audit import StreamAuditService
 from app.services.stream_health import StreamHealthService
+from app.services.parse_version import ParseVersionService
+from app.services.event_ingest import EventIngestService
+from app.services.event_trans_accept import EventTransAcceptService
+from app.services.event_output import EventOutputService
+from app.services.batch_consume import BatchConsumeService
+from app.services.handover_point import HandoverPointService
 
 SERVICES: dict[str, BaseModuleService] = {
     "cdc_source": CdcSourceService(),
@@ -48,6 +54,12 @@ SERVICES: dict[str, BaseModuleService] = {
     "task_schedule": TaskScheduleService(),
     "stream_audit": StreamAuditService(),
     "stream_health": StreamHealthService(),
+    "parse_version": ParseVersionService(),
+    "event_ingest": EventIngestService(),
+    "event_trans_accept": EventTransAcceptService(),
+    "event_output": EventOutputService(),
+    "batch_consume": BatchConsumeService(),
+    "handover_point": HandoverPointService(),
 }
 
 
